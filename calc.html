@@ -1,0 +1,248 @@
+<!doctype html><meta charset="utf-8">
+<title>Pricing Calculator</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<body style="font-family:system-ui;margin:20px;max-width:900px">
+  <h2>Pricing Calculator</h2>
+  <div id="status">Loading…</div>
+
+  <div id="ui" style="display:none">
+    <!-- Deal features pulled from HubSpot -->
+    <h3>Deal Features</h3>
+    <div id="features"></div>
+
+    <!-- Standard items (always included) -->
+    <h3 style="margin-top:20px">Standard Line Items</h3>
+    <table id="standard" border="0" cellpadding="6"></table>
+
+    <!-- Optional add-ons -->
+    <h3 style="margin-top:20px">Optional Add-ons</h3>
+    <table id="options" border="0" cellpadding="6"></table>
+
+    <!-- Totals -->
+    <h3 style="margin-top:20px">Summary</h3>
+    <div id="summary"></div>
+
+    <div style="margin-top:16px">
+      <button id="save">Save to Deal</button>
+      <span id="saveStatus" style="margin-left:10px"></span>
+    </div>
+  </div>
+
+  <script>
+    // --- small utilities ---
+    const fmt = (n, c) => new Intl.NumberFormat(undefined, { style: 'currency', currency: c || 'USD' }).format(Number(n||0));
+
+    function matchCond(features, cond) {
+      // supports { key: value } or {"seats:gte": 20}
+      for (const k in cond) {
+        const v = cond[k];
+        if (k.includes(':')) {
+          const [key, op] = k.split(':');
+          const val = Number(features[key] ?? 0);
+          if (op === 'gte' && !(val >= Number(v))) return false;
+          if (op === 'gt'  && !(val >  Number(v))) return false;
+          if (op === 'lte' && !(val <= Number(v))) return false;
+          if (op === 'lt'  && !(val <  Number(v))) return false;
+        } else {
+          if (String(features[k] ?? '') !== String(v)) return false;
+        }
+      }
+      return true;
+    }
+
+    function firstMatch(list, features) {
+      for (const r of list || []) if (matchCond(features, r.if)) return r;
+      return null;
+    }
+
+    (async () => {
+      // 1) read context from querystring
+      const qs = new URLSearchParams(location.search);
+      const dealId = qs.get('dealId');
+      const t = qs.get('t');
+
+      // 2) fetch deal + config
+      const [dealRes, cfgRes] = await Promise.all([
+        fetch(`/api/deals/${dealId}?t=${encodeURIComponent(t)}`),
+        fetch('/api/calc-config')
+      ]);
+
+      const deal = await dealRes.json();
+      const cfg = await cfgRes.json();
+
+      if (!dealRes.ok) {
+        document.getElementById('status').textContent =
+          `Error: ${deal?.hint || deal?.error || 'Failed'} (${deal?.status || dealRes.status})`;
+        return;
+      }
+
+      // 3) build feature values from deal per config
+      const features = {};
+      for (const f of cfg.features) {
+        let val = deal.properties?.[f.fromDealProperty];
+        if (val == null || val === '') val = f.default;
+        features[f.id] = f.type === 'number' ? Number(val || 0)
+                        : f.type === 'percent' ? Number(val || 0)
+                        : val;
+      }
+
+      // 4) currency/tax by rules
+      let currency = 'USD', taxRateGroupId = null;
+      const curRule = firstMatch(cfg.currencyRules, features);
+      if (curRule) {
+        currency = curRule.currency || currency;
+        taxRateGroupId = curRule.taxRateGroupId || null;
+      }
+
+      // 5) display features (read-only)
+      const featDiv = document.getElementById('features');
+      featDiv.innerHTML = cfg.features.map(f => {
+        const v = features[f.id];
+        return `<div><b>${f.label}:</b> ${v}</div>`;
+      }).join('');
+
+      // 6) collect initial cart
+      const cart = new Map(); // id -> {id,name,qty,unitPrice,description,selected,kind,product}
+      const addItem = (src, selected) => {
+        const qty = evalQty(src.qtyFormula, features);
+        cart.set(src.id, {
+          id: src.id,
+          name: src.name,
+          description: src.description || '',
+          unitPrice: Number(src.unitPrice || 0),
+          qty: Number(qty || 0),
+          selected,
+          kind: src.kind || (selected ? 'standard' : 'option'),
+          product: src.product || null
+        });
+      };
+      function evalQty(expr, feat) {
+        if (!expr) return 1;
+        if (/^\d+(\.\d+)?$/.test(expr)) return Number(expr);
+        // simple identifiers like "seats"
+        return Number(feat[expr] || 0);
+      }
+
+      // standard always included
+      for (const s of (cfg.lineItems.standard || [])) addItem(s, true);
+
+      // options: include if config.include=true or autoAdd rule matches
+      for (const o of (cfg.lineItems.options || [])) {
+        let selected = !!o.include;
+        if (!selected && Array.isArray(o.autoAddIf)) {
+          if (o.autoAddIf.some(cond => matchCond(features, cond))) selected = true;
+        }
+        addItem(o, selected);
+      }
+
+      // 7) UI renderers
+      const renderTables = () => {
+        const stdT = document.getElementById('standard');
+        const optT = document.getElementById('options');
+        stdT.innerHTML = `<tr><th align="left">Item</th><th>Qty</th><th>Unit</th><th>Ext</th></tr>` +
+          [...cart.values()].filter(i => i.kind === 'standard').map(row).join('');
+        optT.innerHTML = `<tr><th></th><th align="left">Item</th><th>Qty</th><th>Unit</th><th>Ext</th></tr>` +
+          [...cart.values()].filter(i => i.kind !== 'standard').map(rowOpt).join('');
+        renderTotals();
+      };
+
+      const row = (i) => {
+        return `<tr>
+          <td title="${i.description||''}">${i.name}</td>
+          <td><input data-id="${i.id}" class="qty" type="number" min="0" value="${i.qty}" style="width:70px"></td>
+          <td align="right">${fmt(i.unitPrice, currency)}</td>
+          <td align="right">${fmt(i.qty * i.unitPrice, currency)}</td>
+        </tr>`;
+      };
+      const rowOpt = (i) => {
+        return `<tr>
+          <td><input data-id="${i.id}" class="sel" type="checkbox" ${i.selected?'checked':''}></td>
+          <td title="${i.description||''}">${i.name}</td>
+          <td><input data-id="${i.id}" class="qty" type="number" min="0" value="${i.qty}" style="width:70px"></td>
+          <td align="right">${fmt(i.unitPrice, currency)}</td>
+          <td align="right">${fmt(i.qty * i.unitPrice, currency)}</td>
+        </tr>`;
+      };
+
+      function applyDiscounts(subtotal) {
+        let pct = Number(features.discount || 0); // from deal
+        for (const r of (cfg.discountRules || [])) {
+          if (matchCond(features, r.if)) pct += Number(r.discountPercent || 0);
+        }
+        pct = Math.max(0, Math.min(100, pct));
+        const amount = subtotal * (pct / 100);
+        return { pct, amount, total: subtotal - amount };
+      }
+
+      function renderTotals() {
+        let subtotal = 0;
+        for (const i of cart.values()) if (i.selected && i.qty > 0) subtotal += i.qty * i.unitPrice;
+        const { pct, amount, total } = applyDiscounts(subtotal);
+        const s = document.getElementById('summary');
+        s.innerHTML = `
+          <div>Currency: <b>${currency}</b>${taxRateGroupId ? ` (Tax Group: ${taxRateGroupId})` : ''}</div>
+          <div>Subtotal: <b>${fmt(subtotal, currency)}</b></div>
+          <div>Discount: <b>${pct}%</b> (${fmt(amount, currency)})</div>
+          <div style="font-size:1.1em;margin-top:6px">Total: <b>${fmt(total, currency)}</b></div>
+        `;
+      }
+
+      // wire inputs
+      document.addEventListener('input', (e) => {
+        if (e.target.classList.contains('qty')) {
+          const id = e.target.getAttribute('data-id');
+          const it = cart.get(id); if (!it) return;
+          it.qty = Number(e.target.value || 0);
+          renderTotals();
+        }
+        if (e.target.classList.contains('sel')) {
+          const id = e.target.getAttribute('data-id');
+          const it = cart.get(id); if (!it) return;
+          it.selected = e.target.checked;
+          renderTotals();
+        }
+      });
+
+      // initial render
+      document.getElementById('status').style.display = 'none';
+      document.getElementById('ui').style.display = 'block';
+      renderTables();
+
+      // 8) Save to Deal -> POST /api/line-items (batch)
+      document.getElementById('save').onclick = async () => {
+        const items = [];
+        for (const i of cart.values()) {
+          if (!i.selected || i.qty <= 0) continue;
+          items.push({
+            name: i.name,
+            qty: i.qty,
+            unitPrice: i.unitPrice,
+            currency,
+            description: i.description || '',
+            discountPercent: Number(features.discount || 0), // stack deal discount
+            // Optional mappings:
+            hsProductId: i.product?.hsProductId || null,
+            taxRateGroupId: taxRateGroupId || null
+            // For recurring charges, add:
+            // recurringbillingfrequency: 'monthly'
+          });
+        }
+
+        const saveEl = document.getElementById('saveStatus');
+        saveEl.textContent = 'Saving…';
+        const resp = await fetch('/api/line-items', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ dealId, t, items, dedupeKey: `${dealId}:${Date.now()}` })
+        });
+        const body = await resp.json();
+        if (resp.ok && body?.ok) {
+          saveEl.textContent = `Saved ${body.created.length} line item(s). Refresh the deal to see them.`;
+        } else {
+          saveEl.textContent = `Error: ${body?.hint || body?.error || 'Failed'} (${body?.status || resp.status})`;
+          console.log('Save error details:', body);
+        }
+      };
+    })();
+  </script>
+</body>
