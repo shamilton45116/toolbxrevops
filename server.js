@@ -30,4 +30,44 @@ app.get('/', (req, res) => {
   );
 });
 
-// Serve static assets
+// Serve static assets under /hubspot
+app.use('/hubspot', express.static(path.join(__dirname, 'public')));
+
+// -------------- NEW: serve /hubspot/calc without .html --------------
+app.get('/hubspot/calc', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'calc.html'));
+});
+
+// Short-lived JWT for iframe URL
+app.get('/api/jwt', (req, res) => {
+  const { dealId } = req.query;
+  if (!dealId) return res.status(400).send('dealId required');
+  const t = jwt.sign({ dealId }, JWT_SECRET, { expiresIn: '5m' });
+  res.type('text/plain').send(t);
+});
+
+// Read selected Deal properties from HubSpot
+app.get('/api/deals/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { t } = req.query;
+    jwt.verify(t, JWT_SECRET); // throws if invalid/expired
+
+    const props = [
+      'dealname','amount','dealstage','pipeline',
+      'custom_region','custom_segment','custom_discount_rate'
+    ].join(',');
+
+    const url = `https://api.hubapi.com/crm/v3/objects/deals/${id}?properties=${encodeURIComponent(props)}`;
+    const { data } = await axios.get(url, {
+      headers: { Authorization: `Bearer ${HUBSPOT_TOKEN}` }
+    });
+
+    res.json({ id: data.id, properties: data.properties });
+  } catch (e) {
+    console.error(e?.response?.data || e.message);
+    res.status(500).json({ error: 'Failed to fetch deal' });
+  }
+});
+
+app.listen(PORT, () => console.log(`Server on :${PORT}`));
