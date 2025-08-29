@@ -1,16 +1,14 @@
 {
   "version": 1,
-
   "features": [
     { "id": "erpPos",     "label": "ERP/POS",              "fromDealProperty": "custom_erp_pos",           "default": "" },
     { "id": "locations",  "label": "Number of Locations",  "fromDealProperty": "custom_number_locations",  "default": 1, "type": "number" },
     { "id": "currency",   "label": "Currency",             "fromDealProperty": "hs_currency",              "default": "USD" }
   ],
-
   "lineItems": {
     "standard": [
       {
-        "id": "base_sub",
+        "id": "subscription",
         "name": "Subscription",
         "description": "Per-location subscription",
         "unitPrice": 100,
@@ -24,6 +22,14 @@
         "name": "Implementation",
         "description": "One-time onboarding",
         "unitPrice": 2500,
+        "qtyFormula": "1",
+        "include": false
+      },
+      {
+        "id": "training",
+        "name": "Training",
+        "description": "Admin training session",
+        "unitPrice": 1200,
         "qtyFormula": "1",
         "include": false
       }
