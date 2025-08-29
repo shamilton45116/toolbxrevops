@@ -11,33 +11,27 @@ import { fileURLToPath } from 'url';
 
 const app = express();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-
-const {
-  HUBSPOT_TOKEN,
-  JWT_SECRET,
-  PORT = process.env.PORT || 3000,
-} = process.env;
+const { HUBSPOT_TOKEN, JWT_SECRET, PORT = process.env.PORT || 3000 } = process.env;
 
 app.use(express.json());
 app.use(cors());
 
-// Allow embedding inside HubSpot (iframe modal)
-app.use((req, res, next) => {
-  res.setHeader(
-    'Content-Security-Policy',
-    "frame-ancestors 'self' https://app.hubspot.com https://*.hubspot.com"
-  );
+// allow embedding in HubSpot UI
+app.use((_, res, next) => {
+  res.setHeader('Content-Security-Policy', "frame-ancestors 'self' https://app.hubspot.com https://*.hubspot.com");
   next();
 });
 
-// ----------------------- Load config -----------------------
+/* ------------ load config (calc.config.json) ------------ */
 let CALC_CFG = { features: [], lineItems: { standard: [], options: [] } };
 function loadConfig() {
   try {
     const raw = fs.readFileSync(path.join(__dirname, 'calc.config.json'), 'utf8');
-    CALC_CFG = JSON.parse(raw);
-    if (!Array.isArray(CALC_CFG.features)) CALC_CFG.features = [];
-    if (!CALC_CFG.lineItems) CALC_CFG.lineItems = { standard: [], options: [] };
+    const cfg = JSON.parse(raw);
+    CALC_CFG = {
+      features: Array.isArray(cfg.features) ? cfg.features : [],
+      lineItems: cfg.lineItems || { standard: [], options: [] }
+    };
   } catch (e) {
     console.error('Config load error:', e.message);
     CALC_CFG = { features: [], lineItems: { standard: [], options: [] } };
@@ -56,44 +50,28 @@ app.post('/api/reload-config', (_req, res) => {
   res.json({ ok: true, features: CALC_CFG.features.length });
 });
 
-// --- Static / Root (no caching for HTML) ---
-app.disable('etag'); // disable ETag for the whole app
-
+/* ------------ static (no-store for HTML) ------------ */
+app.disable('etag');
 const staticDir = path.join(__dirname, 'public');
-app.use(
-  '/hubspot',
-  express.static(staticDir, {
-    etag: false,
-    lastModified: false,
-    setHeaders: (res, filePath) => {
-      if (filePath.endsWith('.html')) {
-        res.setHeader('Cache-Control', 'no-store');
-      } else {
-        res.setHeader('Cache-Control', 'no-cache');
-      }
-    }
-  })
-);
+const staticOpts = {
+  etag: false,
+  lastModified: false,
+  setHeaders: (res, filePath) => {
+    res.setHeader('Cache-Control', filePath.endsWith('.html') ? 'no-store' : 'no-cache');
+  }
+};
+app.use('/toolbxrevops', express.static(staticDir, staticOpts));
+app.get('/toolbxrevops/calc', (_req, res) => { res.set('Cache-Control', 'no-store'); res.sendFile(path.join(staticDir, 'calc.html')); });
+app.get('/toolbxrevops/calc-v3', (_req, res) => { res.set('Cache-Control', 'no-store'); res.sendFile(path.join(staticDir, 'calc.html')); });
 
-// Serve calc.html explicitly and also set no-store
-app.get('/hubspot/calc', (req, res) => {
-  res.set('Cache-Control', 'no-store');
-  res.sendFile(path.join(staticDir, 'calc.html'));
-});
-
-// Versioned path to bypass any stale caches
-app.get('/hubspot/calc-v3', (req, res) => {
-  res.set('Cache-Control', 'no-store');
-  res.sendFile(path.join(staticDir, 'calc.html'));
-});
-
-// Friendly root
 app.get('/', (_req, res) => {
-  res.send(`<h3>HubSpot Calculator</h3>
-  <p>Try <code>/hubspot/calc-v3?dealId=YOUR_DEAL_ID&t=YOUR_JWT</code></p>`);
+  res.send(`<h3>TOOLBX RevOps Calculator</h3>
+  <p>Try <code>/toolbxrevops/calc-v3?dealId=YOUR_DEAL_ID&t=YOUR_JWT</code></p>`);
 });
 
-// ----------------------- JWT (MISSING BEFORE) -----------------------
+app.get('/healthz', (_req, res) => res.json({ ok: true, service: 'toolbxrevops', version: 'v3' }));
+
+/* ------------ JWT (5-minute token) ------------ */
 app.get('/api/jwt', (req, res) => {
   const { dealId } = req.query;
   if (!dealId) return res.status(400).send('dealId required');
@@ -105,10 +83,10 @@ app.get('/api/jwt', (req, res) => {
   }
 });
 
-// ----------------------- Deals (read + optional write) -----------------------
+/* ------------ Deal read (+ optional write) ------------ */
 function configDealProps() {
   const featureProps = (CALC_CFG.features || []).map(f => f.fromDealProperty).filter(Boolean);
-  const baseProps = ['dealname', 'dealstage', 'pipeline', 'hs_currency']; // Deal Name, Stage, Currency
+  const baseProps = ['dealname', 'dealstage', 'pipeline', 'hs_currency'];
   return Array.from(new Set([...baseProps, ...featureProps]));
 }
 
@@ -116,9 +94,8 @@ app.get('/api/deals/:id', async (req, res) => {
   try {
     const { id } = req.params; const { t } = req.query;
     const payload = jwt.verify(t, JWT_SECRET, { clockTolerance: 5 });
-    if (String(payload.dealId) !== String(id)) {
-      return res.status(403).json({ error: 'Deal mismatch' });
-    }
+    if (String(payload.dealId) !== String(id)) return res.status(403).json({ error: 'Deal mismatch' });
+
     const propsParam = encodeURIComponent(configDealProps().join(','));
     const url = `https://api.hubapi.com/crm/v3/objects/deals/${id}?properties=${propsParam}`;
     const { data } = await axios.get(url, { headers: { Authorization: `Bearer ${HUBSPOT_TOKEN}` } });
@@ -128,14 +105,13 @@ app.get('/api/deals/:id', async (req, res) => {
   }
 });
 
-// (Optional) write Deal properties
+// optional: update deal properties
 app.patch('/api/deals/:id', async (req, res) => {
   try {
     const { id } = req.params; const { t, properties } = req.body || {};
     const payload = jwt.verify(t, JWT_SECRET, { clockTolerance: 5 });
-    if (String(payload.dealId) !== String(id)) {
-      return res.status(403).json({ error: 'Deal mismatch' });
-    }
+    if (String(payload.dealId) !== String(id)) return res.status(403).json({ error: 'Deal mismatch' });
+
     const url = `https://api.hubapi.com/crm/v3/objects/deals/${id}`;
     const { data } = await axios.patch(url, { properties }, { headers: { Authorization: `Bearer ${HUBSPOT_TOKEN}` } });
     res.json({ ok: true, deal: data });
@@ -144,15 +120,15 @@ app.patch('/api/deals/:id', async (req, res) => {
   }
 });
 
-// ----------------------- Line Items (read) -----------------------
+/* ------------ Line items: read ------------ */
 const LINE_ITEM_PROPS = [
-  'name',                          // Name
-  'price',                         // Unit Price
-  'quantity',                      // Quantity
-  'hs_discount_percentage',        // Unit Discount (%)
-  'hs_discount_amount',            // Unit Discount (absolute)
-  'recurringbillingfrequency',     // Term
-  'hs_line_item_currency_code'     // Currency per line item
+  'name',
+  'price',
+  'quantity',
+  'hs_discount_percentage',
+  'hs_discount_amount',
+  'recurringbillingfrequency',
+  'hs_line_item_currency_code'
 ];
 
 async function getAssociatedLineItemIds(dealId) {
@@ -163,7 +139,7 @@ async function getAssociatedLineItemIds(dealId) {
     url.searchParams.set('limit', '100');
     if (after) url.searchParams.set('after', after);
     const { data } = await axios.get(url.toString(), { headers: { Authorization: `Bearer ${HUBSPOT_TOKEN}` } });
-    for (const r of (data?.results || [])) if (r.to && r.to.id) ids.push(String(r.to.id));
+    for (const r of (data?.results || [])) if (r.to?.id) ids.push(String(r.to.id));
     after = data?.paging?.next?.after;
   } while (after);
   return ids;
@@ -190,7 +166,7 @@ app.get('/api/deals/:id/line-items', async (req, res) => {
   }
 });
 
-// ----------------------- Line Items (create + update) -----------------------
+/* ------------ Line items: create + update (upsert) ------------ */
 function toLineItemProperties(item) {
   const p = {
     name: item.name,
@@ -204,7 +180,7 @@ function toLineItemProperties(item) {
   return p;
 }
 
-// Upsert: items with "id" are UPDATED; without "id" are CREATED & associated to deal
+// items with "id" are updated; without "id" are created + associated to the deal
 app.post('/api/line-items/upsert', async (req, res) => {
   try {
     const { dealId, t, items } = req.body || {};
@@ -249,5 +225,5 @@ app.post('/api/line-items/upsert', async (req, res) => {
   }
 });
 
-// ----------------------- Start -----------------------
-app.listen(PORT, () => console.log(`Server on :${PORT}`));
+/* ------------ start ------------ */
+app.listen(PORT, () => console.log(`toolbxrevops server on :${PORT}`));
