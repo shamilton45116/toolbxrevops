@@ -1,248 +1,212 @@
 <!doctype html><meta charset="utf-8">
 <title>Pricing Calculator</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<body style="font-family:system-ui;margin:20px;max-width:900px">
+<body style="font-family:system-ui;margin:20px;max-width:1100px">
   <h2>Pricing Calculator</h2>
   <div id="status">Loading…</div>
 
   <div id="ui" style="display:none">
-    <!-- Deal features pulled from HubSpot -->
-    <h3>Deal Features</h3>
+    <h3>Deal</h3>
+    <div id="dealHeader"></div>
+
+    <h3 style="margin-top:16px">Features</h3>
     <div id="features"></div>
 
-    <!-- Standard items (always included) -->
-    <h3 style="margin-top:20px">Standard Line Items</h3>
-    <table id="standard" border="0" cellpadding="6"></table>
+    <h3 style="margin-top:20px">Line Items</h3>
+    <div style="display:flex; gap:18px; align-items:flex-start">
+      <div style="flex:1">
+        <table id="items" border="0" cellpadding="6" style="width:100%; border-collapse:collapse">
+          <thead>
+            <tr style="border-bottom:1px solid #ddd">
+              <th align="left">Name</th>
+              <th align="right">Unit Price</th>
+              <th align="right">Qty</th>
+              <th align="right">Unit Discount %</th>
+              <th align="left">Term</th>
+              <th align="left">Currency</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="tbody"></tbody>
+        </table>
+        <button id="addRow" style="margin-top:10px">+ Add Blank Item</button>
+      </div>
 
-    <!-- Optional add-ons -->
-    <h3 style="margin-top:20px">Optional Add-ons</h3>
-    <table id="options" border="0" cellpadding="6"></table>
+      <div style="width:320px">
+        <div style="font-weight:600">Add from Catalog</div>
+        <div id="catalog"></div>
+      </div>
+    </div>
 
-    <!-- Totals -->
-    <h3 style="margin-top:20px">Summary</h3>
-    <div id="summary"></div>
-
-    <div style="margin-top:16px">
-      <button id="save">Save to Deal</button>
+    <div style="margin-top:20px">
+      <button id="save">Save Changes to Deal</button>
       <span id="saveStatus" style="margin-left:10px"></span>
     </div>
   </div>
 
   <script>
-    // --- small utilities ---
-    const fmt = (n, c) => new Intl.NumberFormat(undefined, { style: 'currency', currency: c || 'USD' }).format(Number(n||0));
+    const money = (v) => Number(v ?? 0);
+    const q = (sel) => document.querySelector(sel);
+    const ce = (tag, attrs={}) => Object.assign(document.createElement(tag), attrs);
 
-    function matchCond(features, cond) {
-      // supports { key: value } or {"seats:gte": 20}
-      for (const k in cond) {
-        const v = cond[k];
-        if (k.includes(':')) {
-          const [key, op] = k.split(':');
-          const val = Number(features[key] ?? 0);
-          if (op === 'gte' && !(val >= Number(v))) return false;
-          if (op === 'gt'  && !(val >  Number(v))) return false;
-          if (op === 'lte' && !(val <= Number(v))) return false;
-          if (op === 'lt'  && !(val <  Number(v))) return false;
-        } else {
-          if (String(features[k] ?? '') !== String(v)) return false;
-        }
-      }
-      return true;
+    function rowTemplate(item, currencyDefault) {
+      const tr = ce('tr');
+      tr.dataset.id = item.id || ''; // blank means "create"
+
+      const name = ce('input', { value: item.name || '', style: 'width:220px' });
+      const price = ce('input', { type: 'number', step: '0.01', value: item.unitPrice ?? item.price ?? 0, style: 'width:110px; text-align:right' });
+      const qty = ce('input', { type: 'number', step: '1', value: item.quantity ?? item.qty ?? 1, style: 'width:70px; text-align:right' });
+      const disc = ce('input', { type: 'number', step: '0.01', value: item.discountPercent ?? item.hs_discount_percentage ?? 0, style: 'width:110px; text-align:right' });
+      const term = ce('input', { value: item.term ?? item.recurringbillingfrequency ?? '', style: 'width:120px' });
+
+      const curr = ce('input', { value: item.currency || item.hs_line_item_currency_code || currencyDefault || 'USD', style: 'width:80px' });
+      const del = ce('button', { innerText: 'Remove' });
+
+      del.onclick = () => tr.remove();
+
+      [name, price, qty, disc, term, curr, del].forEach((el) => {
+        const td = ce('td');
+        if (el.tagName === 'BUTTON') td.align = 'right';
+        td.appendChild(el); tr.appendChild(td);
+      });
+
+      return tr;
     }
 
-    function firstMatch(list, features) {
-      for (const r of list || []) if (matchCond(features, r.if)) return r;
-      return null;
+    function renderCatalog(cfg, features, tbody, currencyDefault) {
+      const box = q('#catalog');
+      box.innerHTML = '';
+      const mkBtn = (lbl, on) => { const b = ce('button', { innerText: lbl, style:'display:block; margin-top:8px; width:100%' }); b.onclick = on; return b; };
+
+      (cfg.lineItems?.standard || []).forEach(it => {
+        box.appendChild(mkBtn('Add: ' + it.name, () => {
+          tbody.appendChild(rowTemplate({
+            name: it.name,
+            unitPrice: it.unitPrice || 0,
+            qty: evalQty(it.qtyFormula, features) || 1,
+            discountPercent: 0,
+            term: ''
+          }, currencyDefault));
+        }));
+      });
+      (cfg.lineItems?.options || []).forEach(it => {
+        box.appendChild(mkBtn('Add: ' + it.name, () => {
+          tbody.appendChild(rowTemplate({
+            name: it.name,
+            unitPrice: it.unitPrice || 0,
+            qty: evalQty(it.qtyFormula, features) || 1,
+            discountPercent: 0,
+            term: ''
+          }, currencyDefault));
+        }));
+      });
+    }
+
+    function evalQty(expr, feat) {
+      if (!expr) return 1;
+      if (/^\d+(\.\d+)?$/.test(expr)) return Number(expr);
+      return Number(feat[expr] || 0);
     }
 
     (async () => {
-      // 1) read context from querystring
+      // Read context
       const qs = new URLSearchParams(location.search);
       const dealId = qs.get('dealId');
       const t = qs.get('t');
 
-      // 2) fetch deal + config
+      // Load deal + config + line items
       const [dealRes, cfgRes] = await Promise.all([
         fetch(`/api/deals/${dealId}?t=${encodeURIComponent(t)}`),
         fetch('/api/calc-config')
       ]);
-
       const deal = await dealRes.json();
       const cfg = await cfgRes.json();
-
       if (!dealRes.ok) {
-        document.getElementById('status').textContent =
-          `Error: ${deal?.hint || deal?.error || 'Failed'} (${deal?.status || dealRes.status})`;
+        q('#status').innerText = `Error: ${deal?.error || dealRes.status}`;
         return;
       }
 
-      // 3) build feature values from deal per config
+      // Build features from config
       const features = {};
-      for (const f of cfg.features) {
+      for (const f of (cfg.features || [])) {
         let val = deal.properties?.[f.fromDealProperty];
         if (val == null || val === '') val = f.default;
-        features[f.id] = f.type === 'number' ? Number(val || 0)
-                        : f.type === 'percent' ? Number(val || 0)
-                        : val;
+        features[f.id] = (f.type === 'number' || f.type === 'percent') ? Number(val || 0) : val;
       }
+      const dealCurrency = deal.properties?.hs_currency || features.currency || 'USD';
 
-      // 4) currency/tax by rules
-      let currency = 'USD', taxRateGroupId = null;
-      const curRule = firstMatch(cfg.currencyRules, features);
-      if (curRule) {
-        currency = curRule.currency || currency;
-        taxRateGroupId = curRule.taxRateGroupId || null;
-      }
+      // Header
+      q('#dealHeader').innerHTML = `
+        <div><b>Deal Name:</b> ${deal.properties?.dealname || ''}</div>
+        <div><b>Deal Stage:</b> ${deal.properties?.dealstage || ''}</div>
+      `;
+      // Features
+      q('#features').innerHTML = `
+        <div><b>ERP/POS:</b> ${features.erpPos ?? ''}</div>
+        <div><b>Number of Locations:</b> ${features.locations ?? ''}</div>
+        <div><b>Currency:</b> ${dealCurrency}</div>
+      `;
 
-      // 5) display features (read-only)
-      const featDiv = document.getElementById('features');
-      featDiv.innerHTML = cfg.features.map(f => {
-        const v = features[f.id];
-        return `<div><b>${f.label}:</b> ${v}</div>`;
-      }).join('');
+      // Table body
+      const tbody = q('#tbody');
+      tbody.innerHTML = '';
 
-      // 6) collect initial cart
-      const cart = new Map(); // id -> {id,name,qty,unitPrice,description,selected,kind,product}
-      const addItem = (src, selected) => {
-        const qty = evalQty(src.qtyFormula, features);
-        cart.set(src.id, {
-          id: src.id,
-          name: src.name,
-          description: src.description || '',
-          unitPrice: Number(src.unitPrice || 0),
-          qty: Number(qty || 0),
-          selected,
-          kind: src.kind || (selected ? 'standard' : 'option'),
-          product: src.product || null
-        });
-      };
-      function evalQty(expr, feat) {
-        if (!expr) return 1;
-        if (/^\d+(\.\d+)?$/.test(expr)) return Number(expr);
-        // simple identifiers like "seats"
-        return Number(feat[expr] || 0);
-      }
+      // Existing line items
+      const liRes = await fetch(`/api/deals/${dealId}/line-items?t=${encodeURIComponent(t)}`);
+      const liData = await liRes.json();
+      const existing = (liData.results || []).map(r => ({
+        id: r.id,
+        name: r.properties?.name || '',
+        unitPrice: r.properties?.price ? Number(r.properties.price) : 0,
+        qty: r.properties?.quantity ? Number(r.properties.quantity) : 1,
+        discountPercent: r.properties?.hs_discount_percentage ? Number(r.properties.hs_discount_percentage) : 0,
+        term: r.properties?.recurringbillingfrequency || '',
+        currency: r.properties?.hs_line_item_currency_code || dealCurrency
+      }));
+      existing.forEach(it => tbody.appendChild(rowTemplate(it, dealCurrency)));
 
-      // standard always included
-      for (const s of (cfg.lineItems.standard || [])) addItem(s, true);
+      // Catalog buttons (standard + options) from config
+      renderCatalog(cfg, features, tbody, dealCurrency);
 
-      // options: include if config.include=true or autoAdd rule matches
-      for (const o of (cfg.lineItems.options || [])) {
-        let selected = !!o.include;
-        if (!selected && Array.isArray(o.autoAddIf)) {
-          if (o.autoAddIf.some(cond => matchCond(features, cond))) selected = true;
-        }
-        addItem(o, selected);
-      }
+      // Add blank row
+      q('#addRow').onclick = () => tbody.appendChild(rowTemplate({}, dealCurrency));
 
-      // 7) UI renderers
-      const renderTables = () => {
-        const stdT = document.getElementById('standard');
-        const optT = document.getElementById('options');
-        stdT.innerHTML = `<tr><th align="left">Item</th><th>Qty</th><th>Unit</th><th>Ext</th></tr>` +
-          [...cart.values()].filter(i => i.kind === 'standard').map(row).join('');
-        optT.innerHTML = `<tr><th></th><th align="left">Item</th><th>Qty</th><th>Unit</th><th>Ext</th></tr>` +
-          [...cart.values()].filter(i => i.kind !== 'standard').map(rowOpt).join('');
-        renderTotals();
-      };
+      // Save (upsert)
+      q('#save').onclick = async () => {
+        const rows = [...tbody.querySelectorAll('tr')];
+        const items = rows.map(tr => {
+          const [name, price, qty, disc, term, curr] = [...tr.querySelectorAll('input')];
+          const payload = {
+            name: name.value.trim(),
+            unitPrice: money(price.value),
+            quantity: Number(qty.value || 0),
+            discountPercent: Number(disc.value || 0),
+            term: (term.value || '').trim(),
+            currency: (curr.value || dealCurrency).trim()
+          };
+          if (tr.dataset.id) payload.id = tr.dataset.id; // update vs create
+          return payload;
+        }).filter(it => it.name);
 
-      const row = (i) => {
-        return `<tr>
-          <td title="${i.description||''}">${i.name}</td>
-          <td><input data-id="${i.id}" class="qty" type="number" min="0" value="${i.qty}" style="width:70px"></td>
-          <td align="right">${fmt(i.unitPrice, currency)}</td>
-          <td align="right">${fmt(i.qty * i.unitPrice, currency)}</td>
-        </tr>`;
-      };
-      const rowOpt = (i) => {
-        return `<tr>
-          <td><input data-id="${i.id}" class="sel" type="checkbox" ${i.selected?'checked':''}></td>
-          <td title="${i.description||''}">${i.name}</td>
-          <td><input data-id="${i.id}" class="qty" type="number" min="0" value="${i.qty}" style="width:70px"></td>
-          <td align="right">${fmt(i.unitPrice, currency)}</td>
-          <td align="right">${fmt(i.qty * i.unitPrice, currency)}</td>
-        </tr>`;
-      };
-
-      function applyDiscounts(subtotal) {
-        let pct = Number(features.discount || 0); // from deal
-        for (const r of (cfg.discountRules || [])) {
-          if (matchCond(features, r.if)) pct += Number(r.discountPercent || 0);
-        }
-        pct = Math.max(0, Math.min(100, pct));
-        const amount = subtotal * (pct / 100);
-        return { pct, amount, total: subtotal - amount };
-      }
-
-      function renderTotals() {
-        let subtotal = 0;
-        for (const i of cart.values()) if (i.selected && i.qty > 0) subtotal += i.qty * i.unitPrice;
-        const { pct, amount, total } = applyDiscounts(subtotal);
-        const s = document.getElementById('summary');
-        s.innerHTML = `
-          <div>Currency: <b>${currency}</b>${taxRateGroupId ? ` (Tax Group: ${taxRateGroupId})` : ''}</div>
-          <div>Subtotal: <b>${fmt(subtotal, currency)}</b></div>
-          <div>Discount: <b>${pct}%</b> (${fmt(amount, currency)})</div>
-          <div style="font-size:1.1em;margin-top:6px">Total: <b>${fmt(total, currency)}</b></div>
-        `;
-      }
-
-      // wire inputs
-      document.addEventListener('input', (e) => {
-        if (e.target.classList.contains('qty')) {
-          const id = e.target.getAttribute('data-id');
-          const it = cart.get(id); if (!it) return;
-          it.qty = Number(e.target.value || 0);
-          renderTotals();
-        }
-        if (e.target.classList.contains('sel')) {
-          const id = e.target.getAttribute('data-id');
-          const it = cart.get(id); if (!it) return;
-          it.selected = e.target.checked;
-          renderTotals();
-        }
-      });
-
-      // initial render
-      document.getElementById('status').style.display = 'none';
-      document.getElementById('ui').style.display = 'block';
-      renderTables();
-
-      // 8) Save to Deal -> POST /api/line-items (batch)
-      document.getElementById('save').onclick = async () => {
-        const items = [];
-        for (const i of cart.values()) {
-          if (!i.selected || i.qty <= 0) continue;
-          items.push({
-            name: i.name,
-            qty: i.qty,
-            unitPrice: i.unitPrice,
-            currency,
-            description: i.description || '',
-            discountPercent: Number(features.discount || 0), // stack deal discount
-            // Optional mappings:
-            hsProductId: i.product?.hsProductId || null,
-            taxRateGroupId: taxRateGroupId || null
-            // For recurring charges, add:
-            // recurringbillingfrequency: 'monthly'
-          });
-        }
-
-        const saveEl = document.getElementById('saveStatus');
-        saveEl.textContent = 'Saving…';
-        const resp = await fetch('/api/line-items', {
+        q('#saveStatus').innerText = 'Saving…';
+        const resp = await fetch('/api/line-items/upsert', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ dealId, t, items, dedupeKey: `${dealId}:${Date.now()}` })
+          body: JSON.stringify({ dealId, t, items })
         });
         const body = await resp.json();
         if (resp.ok && body?.ok) {
-          saveEl.textContent = `Saved ${body.created.length} line item(s). Refresh the deal to see them.`;
+          q('#saveStatus').innerText = `Saved (${(body.created?.length||0)} created, ${(body.updated?.length||0)} updated). Refresh your deal to see changes.`;
         } else {
-          saveEl.textContent = `Error: ${body?.hint || body?.error || 'Failed'} (${body?.status || resp.status})`;
-          console.log('Save error details:', body);
+          q('#saveStatus').innerText = `Error: ${body?.error || resp.status}`;
+          console.log('Upsert error:', body);
         }
       };
+
+      // Show UI
+      q('#status').style.display = 'none';
+      q('#ui').style.display = 'block';
     })();
   </script>
+  <small style="opacity:.6">v3</small>
 </body>
