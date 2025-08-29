@@ -56,28 +56,45 @@ app.post('/api/reload-config', (_req, res) => {
   res.json({ ok: true, features: CALC_CFG.features.length });
 });
 
-// ----------------------- Static / Root -----------------------
+// --- Static / Root (no caching for HTML) ---
+app.disable('etag'); // disable ETag for the whole app
+
+const staticDir = path.join(__dirname, 'public');
+app.use(
+  '/hubspot',
+  express.static(staticDir, {
+    etag: false,
+    lastModified: false,
+    setHeaders: (res, filePath) => {
+      // Never cache HTML
+      if (filePath.endsWith('.html')) {
+        res.setHeader('Cache-Control', 'no-store');
+      } else {
+        // cache bust for other assets if you like
+        res.setHeader('Cache-Control', 'no-cache');
+      }
+    }
+  })
+);
+
+// Serve calc.html explicitly and also set no-store
+app.get('/hubspot/calc', (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  res.sendFile(path.join(staticDir, 'calc.html'));
+});
+
+// Add a versioned path so you can bypass any old URL completely
+app.get('/hubspot/calc-v3', (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  res.sendFile(path.join(staticDir, 'calc.html'));
+});
+
+// Friendly root
 app.get('/', (_req, res) => {
   res.send(`<h3>HubSpot Calculator</h3>
-  <p>Try <code>/hubspot/calc?dealId=YOUR_DEAL_ID&t=YOUR_JWT</code></p>`);
+  <p>Try <code>/hubspot/calc-v3?dealId=YOUR_DEAL_ID&t=YOUR_JWT</code></p>`);
 });
-app.use('/hubspot', express.static(path.join(__dirname, 'public')));
-app.get('/hubspot/calc', (_req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'calc.html'));
-});
-app.get('/healthz', (_req, res) => res.json({ ok: true }));
 
-// ----------------------- JWT -----------------------
-app.get('/api/jwt', (req, res) => {
-  const { dealId } = req.query;
-  if (!dealId) return res.status(400).send('dealId required');
-  try {
-    const t = jwt.sign({ dealId: String(dealId) }, JWT_SECRET, { expiresIn: '5m' });
-    res.type('text/plain').send(t);
-  } catch {
-    res.status(500).send('Failed to mint JWT');
-  }
-});
 
 // ----------------------- Deals (read + optional write) -----------------------
 function configDealProps() {
