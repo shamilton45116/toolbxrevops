@@ -11,15 +11,15 @@ import { fileURLToPath } from 'url';
 
 const app = express();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-
 const {
   HUBSPOT_TOKEN,
   JWT_SECRET,
   PORT = process.env.PORT || 3000,
 } = process.env;
 
-app.use(cors());
+// ----------------------- Middleware -----------------------
 app.use(express.json());
+app.use(cors());
 
 // Allow embedding inside HubSpot (iframe modal)
 app.use((req, res, next) => {
@@ -30,7 +30,49 @@ app.use((req, res, next) => {
   next();
 });
 
-// Root
+// ----------------------- Config load (Step 2) -----------------------
+// Loads calc.config.json and exposes it via /api/calc-config.
+// Also used by /api/deals/:id to decide which properties to fetch.
+
+let CALC_CFG = { features: [], lineItems: { standard: [], options: [] } };
+
+function loadConfig() {
+  try {
+    const file = path.join(__dirname, 'calc.config.json');
+    const raw = fs.readFileSync(file, 'utf8');
+    CALC_CFG = JSON.parse(raw);
+    if (!Array.isArray(CALC_CFG.features)) CALC_CFG.features = [];
+    if (!CALC_CFG.lineItems) CALC_CFG.lineItems = { standard: [], options: [] };
+  } catch (e) {
+    console.error('Config load error:', e.message);
+    CALC_CFG = { features: [], lineItems: { standard: [], options: [] } };
+  }
+}
+loadConfig();
+
+// Serve the config to the frontend
+app.get('/api/calc-config', (req, res) => {
+  try {
+    res.setHeader('Content-Type', 'application/json');
+    res.setHeader('Cache-Control', 'no-store');
+    res.send(JSON.stringify(CALC_CFG));
+  } catch (e) {
+    res.status(500).json({ error: 'Unable to serve config' });
+  }
+});
+
+// Optional: hot-reload config without redeploying (call POST manually)
+app.post('/api/reload-config', (req, res) => {
+  loadConfig();
+  res.json({
+    ok: true,
+    featureCount: CALC_CFG.features.length,
+    standardCount: CALC_CFG.lineItems?.standard?.length || 0,
+    optionCount: CALC_CFG.lineItems?.options?.length || 0,
+  });
+});
+
+// ----------------------- Static/Root -----------------------
 app.get('/', (req, res) => {
   res.send(
     `<h3>HubSpot Calculator</h3>
@@ -38,27 +80,15 @@ app.get('/', (req, res) => {
   );
 });
 
-// Serve calculator
 app.use('/hubspot', express.static(path.join(__dirname, 'public')));
 app.get('/hubspot/calc', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'calc.html'));
 });
 
-// Serve config (calc.config.json at repo root)
-app.get('/api/calc-config', (req, res) => {
-  try {
-    const file = path.join(__dirname, 'calc.config.json');
-    const raw = fs.readFileSync(file, 'utf8');
-    res.setHeader('Content-Type', 'application/json');
-    res.setHeader('Cache-Control', 'no-store');
-    res.send(raw);
-  } catch (e) {
-    console.error('Config load error:', e.message);
-    res.status(500).json({ error: 'Missing or unreadable calc.config.json' });
-  }
-});
+// Health check (optional)
+app.get('/healthz', (_req, res) => res.json({ ok: true }));
 
-// Mint short-lived JWT tied to a deal
+// ----------------------- Auth: short-lived JWT -----------------------
 app.get('/api/jwt', (req, res) => {
   const { dealId } = req.query;
   if (!dealId) return res.status(400).send('dealId required');
@@ -70,7 +100,7 @@ app.get('/api/jwt', (req, res) => {
   }
 });
 
-// Fetch Deal properties from HubSpot
+// ----------------------- Deals: config-driven property fetch -----------------------
 app.get('/api/deals/:id', async (req, res) => {
   try {
     const { id } = req.params;
@@ -84,18 +114,19 @@ app.get('/api/deals/:id', async (req, res) => {
       });
     }
 
-    const props = [
-      'dealname',
-      'amount',
-      'dealstage',
-      'pipeline',
-      'custom_region',
-      'custom_segment',
-      'custom_discount_rate',
-      'custom_user_seats',
-    ].join(',');
+    // Build the property list from config.features[].fromDealProperty
+    const featureProps = (CALC_CFG.features || [])
+      .map(f => f.fromDealProperty)
+      .filter(Boolean);
 
-    const url = `https://api.hubapi.com/crm/v3/objects/deals/${id}?properties=${encodeURIComponent(props)}`;
+    // Always include some basics
+    const baseProps = ['dealname', 'amount', 'dealstage', 'pipeline'];
+
+    // Unique list
+    const propsList = Array.from(new Set([...baseProps, ...featureProps]));
+    const propsParam = encodeURIComponent(propsList.join(','));
+
+    const url = `https://api.hubapi.com/crm/v3/objects/deals/${id}?properties=${propsParam}`;
     const { data } = await axios.get(url, {
       headers: { Authorization: `Bearer ${HUBSPOT_TOKEN}` },
     });
@@ -114,18 +145,18 @@ app.get('/api/deals/:id', async (req, res) => {
       hints: [
         'If cause=TokenExpiredError: mint a new /api/jwt token',
         'If cause=JsonWebTokenError: check JWT_SECRET in Render',
-        'If status=403: add crm.objects.deals.read scope & rotate token',
+        'If status=403: check crm.objects.deals.read scope & token portal',
         'If status=404: wrong dealId or wrong portal/token',
       ],
     });
   }
 });
 
-// Build inputs for batch line-item create
+// ----------------------- Line Items: helper + batch create -----------------------
 function buildLineItemInputs({ dealId, items }) {
-  return items.map((item) => {
+  return items.map(item => {
     const properties = {
-      name: item.name,
+      name: item.name, // required
       quantity: String(item.qty ?? 1),
       price: String(item.unitPrice ?? 0),
       hs_line_item_currency_code: item.currency || 'USD',
@@ -139,19 +170,22 @@ function buildLineItemInputs({ dealId, items }) {
     if (item.hsProductId) properties.hs_product_id = String(item.hsProductId);
     if (item.taxRateGroupId) properties.hs_tax_rate_group_id = String(item.taxRateGroupId);
 
+    // Optional recurring examples (uncomment if needed and properties exist in your portal)
+    // if (item.recurringbillingfrequency) properties.recurringbillingfrequency = item.recurringbillingfrequency;
+    // if (item.hs_recurring_billing_start_date) properties.hs_recurring_billing_start_date = item.hs_recurring_billing_start_date;
+
     return {
       properties,
       associations: [
         {
           to: { id: String(dealId) },
-          types: [{ associationCategory: 'HUBSPOT_DEFINED', associationTypeId: 20 }],
+          types: [{ associationCategory: 'HUBSPOT_DEFINED', associationTypeId: 20 }], // deal <-> line item
         },
       ],
     };
   });
 }
 
-// Create line items (batch) & associate to deal
 app.post('/api/line-items', async (req, res) => {
   try {
     const { dealId, t, items, dedupeKey } = req.body;
@@ -164,7 +198,12 @@ app.post('/api/line-items', async (req, res) => {
       return res.status(403).json({ error: 'Deal mismatch for token' });
     }
 
-    // (Optional) Idempotency: store dedupeKey in DB/Redis with short TTL
+    // (Optional) simple idempotency (for production, store in Redis/DB)
+    // globalThis._seenKeys = globalThis._seenKeys || new Map();
+    // if (dedupeKey && globalThis._seenKeys.has(dedupeKey)) {
+    //   return res.status(409).json({ error: 'Duplicate submission' });
+    // }
+    // if (dedupeKey) globalThis._seenKeys.set(dedupeKey, Date.now());
 
     const inputs = buildLineItemInputs({ dealId, items });
 
@@ -188,4 +227,5 @@ app.post('/api/line-items', async (req, res) => {
   }
 });
 
+// ----------------------- Start server -----------------------
 app.listen(PORT, () => console.log(`Server on :${PORT}`));
