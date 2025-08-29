@@ -1,0 +1,66 @@
+{
+  "version": 1,
+  "features": [
+    { "id": "region",   "label": "Region",            "fromDealProperty": "custom_region",         "default": "US" },
+    { "id": "segment",  "label": "Customer Segment",  "fromDealProperty": "custom_segment",        "default": "Pro" },
+    { "id": "seats",    "label": "User Seats",        "fromDealProperty": "custom_user_seats",     "default": 5, "type": "number" },
+    { "id": "discount", "label": "Deal Discount %",   "fromDealProperty": "custom_discount_rate",  "default": 0, "type": "percent" }
+  ],
+
+  "currencyRules": [
+    { "if": { "region": "Canada" }, "currency": "CAD", "taxRateGroupId": "YOUR_CA_TAX_GROUP_ID" },
+    { "if": { "region": "US"     }, "currency": "USD" }
+  ],
+
+  "lineItems": {
+    "standard": [
+      {
+        "id": "base_sub",
+        "name": "TOOLBX Subscription",
+        "description": "Per-seat subscription",
+        "unitPrice": 500,                // price per seat
+        "qtyFormula": "seats",           // auto quantity = feature 'seats'
+        "include": true,                 // always included
+        "product": { "hsProductId": null, "sku": null }  // optional mapping to Product Library
+      },
+      {
+        "id": "support",
+        "name": "Standard Support",
+        "description": "Included support",
+        "unitPrice": 0,
+        "qtyFormula": "1",
+        "include": true
+      }
+    ],
+    "options": [
+      {
+        "id": "implementation",
+        "name": "Implementation Package",
+        "description": "One-time onboarding",
+        "unitPrice": 2500,
+        "qtyFormula": "1",
+        "include": false,                // user can add it
+        "autoAddIf": [{ "segment": "Enterprise" }, { "seats:gte": 20 }]
+      },
+      {
+        "id": "training",
+        "name": "Admin Training",
+        "unitPrice": 1200,
+        "qtyFormula": "1",
+        "include": false
+      },
+      {
+        "id": "premium_support",
+        "name": "Premium Support",
+        "unitPrice": 800,
+        "qtyFormula": "1",
+        "include": false
+      }
+    ]
+  },
+
+  "discountRules": [
+    { "if": { "seats:gte": 50 }, "discountPercent": 10 },   // volume break
+    { "if": { "segment": "Enterprise" }, "discountPercent": 5 }
+  ]
+}
