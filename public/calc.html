@@ -1,47 +1,202 @@
 <!doctype html><meta charset="utf-8">
-<title>Pricing Calculator</title>
-<body style="font-family:system-ui;margin:20px">
-  <h2>Pricing Calculator</h2>
-  <div id="status">Loading deal…</div>
-  <div id="form" style="display:none">
-    <div>Region: <span id="region"></span></div>
-    <div>Segment: <span id="segment"></span></div>
-    <div>Deal Discount: <span id="disc"></span>%</div>
-    <hr>
-    <label>Base Price <input id="base" type="number" value="5000"></label><br><br>
-    <label>Seats <input id="seats" type="number" value="5"></label><br><br>
-    <button id="calc">Calculate</button>
-    <div id="out" style="margin-top:10px;font-weight:600"></div>
+<title>TOOLBX RevOps Calculator</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<body style="font-family:system-ui;margin:20px;max-width:1100px">
+  <h2>TOOLBX RevOps Calculator</h2>
+  <div id="status">Loading…</div>
+
+  <div id="ui" style="display:none">
+    <h3>Deal</h3>
+    <div id="dealHeader"></div>
+
+    <h3 style="margin-top:16px">Features</h3>
+    <div id="features"></div>
+
+    <h3 style="margin-top:20px">Line Items</h3>
+    <div style="display:flex; gap:18px; align-items:flex-start">
+      <div style="flex:1">
+        <table id="items" border="0" cellpadding="6" style="width:100%; border-collapse:collapse">
+          <thead>
+            <tr style="border-bottom:1px solid #ddd">
+              <th align="left">Name</th>
+              <th align="right">Unit Price</th>
+              <th align="right">Qty</th>
+              <th align="right">Unit Discount %</th>
+              <th align="left">Term</th>
+              <th align="left">Currency</th>
+              <th align="right">Ext</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="tbody"></tbody>
+        </table>
+        <button id="addRow" style="margin-top:10px">+ Add Blank Item</button>
+      </div>
+
+      <div style="width:320px">
+        <div style="font-weight:600">Add from Catalog</div>
+        <div id="catalog"></div>
+      </div>
+    </div>
+
+    <div style="margin-top:20px">
+      <button id="save">Save Changes to Deal</button>
+      <span id="saveStatus" style="margin-left:10px"></span>
+    </div>
   </div>
+
   <script>
+    const q = (sel) => document.querySelector(sel);
+    const ce = (tag, attrs={}) => Object.assign(document.createElement(tag), attrs);
+    const fmt = (n, c) => new Intl.NumberFormat(undefined, { style: 'currency', currency: (c||'USD') }).format(Number(n||0));
+
+    function evalQty(expr, feat) {
+      if (!expr) return 1;
+      if (/^\d+(\.\d+)?$/.test(expr)) return Number(expr);
+      return Number(feat[expr] || 0);
+    }
+
+    function rowTemplate(item, currencyDefault) {
+      const tr = ce('tr'); tr.dataset.id = item.id || '';
+      const name = ce('input', { value: item.name || '', style: 'width:220px' });
+      const price = ce('input', { type: 'number', step: '0.01', value: item.unitPrice ?? item.price ?? 0, style: 'width:110px; text-align:right' });
+      const qty = ce('input', { type: 'number', step: '1', value: item.quantity ?? item.qty ?? 1, style: 'width:70px; text-align:right' });
+      const disc = ce('input', { type: 'number', step: '0.01', value: item.discountPercent ?? item.hs_discount_percentage ?? 0, style: 'width:110px; text-align:right' });
+      const term = ce('input', { value: item.term ?? item.recurringbillingfrequency ?? '', style: 'width:120px' });
+      const curr = ce('input', { value: item.currency || item.hs_line_item_currency_code || currencyDefault || 'USD', style: 'width:80px' });
+      const ext = ce('span', { innerText: fmt(calcExt(), curr.value) });
+      const del = ce('button', { innerText: 'Remove' }); del.onclick = () => tr.remove();
+
+      function calcExt() {
+        const p = Number(price.value || 0);
+        const q = Number(qty.value || 0);
+        const d = Math.min(100, Math.max(0, Number(disc.value || 0)));
+        return q * p * (1 - d/100);
+      }
+      function rerenderExt() { ext.innerText = fmt(calcExt(), curr.value); }
+
+      ;[price, qty, disc, curr].forEach(el => el.addEventListener('input', rerenderExt));
+
+      // mount cells
+      [[name],[price],[qty],[disc],[term],[curr],[ext],[del]].forEach((arr, i) => {
+        const td = ce('td'); if (arr[0].tagName === 'BUTTON') td.align='right'; if (i===6) td.align='right';
+        arr.forEach(el => td.appendChild(el)); tr.appendChild(td);
+      });
+      return tr;
+    }
+
+    function renderCatalog(cfg, features, tbody, currencyDefault) {
+      const box = q('#catalog'); box.innerHTML = '';
+      const mkBtn = (lbl, on) => { const b = ce('button', { innerText: lbl, style:'display:block; margin-top:8px; width:100%' }); b.onclick = on; return b; };
+
+      (cfg.lineItems?.standard || []).forEach(it => {
+        box.appendChild(mkBtn('Add: ' + it.name, () => {
+          tbody.appendChild(rowTemplate({
+            name: it.name, unitPrice: it.unitPrice || 0,
+            qty: evalQty(it.qtyFormula, features) || 1,
+            discountPercent: 0, term: ''
+          }, currencyDefault));
+        }));
+      });
+      (cfg.lineItems?.options || []).forEach(it => {
+        box.appendChild(mkBtn('Add: ' + it.name, () => {
+          tbody.appendChild(rowTemplate({
+            name: it.name, unitPrice: it.unitPrice || 0,
+            qty: evalQty(it.qtyFormula, features) || 1,
+            discountPercent: 0, term: ''
+          }, currencyDefault));
+        }));
+      });
+    }
+
     (async () => {
       const qs = new URLSearchParams(location.search);
       const dealId = qs.get('dealId');
       const t = qs.get('t');
 
-      const r = await fetch(`/api/deals/${dealId}?t=${encodeURIComponent(t)}`);
-      const data = await r.json();
-      if (!data?.properties) {
-        document.getElementById('status').textContent = 'Unable to load deal.';
-        return;
+      const [dealRes, cfgRes] = await Promise.all([
+        fetch(`/api/deals/${dealId}?t=${encodeURIComponent(t)}`),
+        fetch('/api/calc-config')
+      ]);
+      const deal = await dealRes.json();
+      const cfg = await cfgRes.json();
+      if (!dealRes.ok) { q('#status').innerText = `Error: ${deal?.error || dealRes.status}`; return; }
+
+      // features from config
+      const features = {};
+      for (const f of (cfg.features || [])) {
+        let val = deal.properties?.[f.fromDealProperty];
+        if (val == null || val === '') val = f.default;
+        features[f.id] = (f.type === 'number' || f.type === 'percent') ? Number(val || 0) : val;
       }
-      const p = data.properties;
-      document.getElementById('region').textContent  = p.custom_region || 'US';
-      document.getElementById('segment').textContent = p.custom_segment || 'Pro';
-      const discount = Number(p.custom_discount_rate || 0);
-      document.getElementById('disc').textContent = discount;
+      const dealCurrency = deal.properties?.hs_currency || features.currency || 'USD';
 
-      document.getElementById('status').style.display = 'none';
-      document.getElementById('form').style.display = 'block';
+      // header
+      q('#dealHeader').innerHTML = `
+        <div><b>Deal Name:</b> ${deal.properties?.dealname || ''}</div>
+        <div><b>Deal Stage:</b> ${deal.properties?.dealstage || ''}</div>
+      `;
+      q('#features').innerHTML = `
+        <div><b>ERP/POS:</b> ${features.erpPos ?? ''}</div>
+        <div><b>Number of Locations:</b> ${features.locations ?? ''}</div>
+        <div><b>Currency:</b> ${dealCurrency}</div>
+      `;
 
-      document.getElementById('calc').onclick = () => {
-        const base  = Number(document.getElementById('base').value);
-        const seats = Number(document.getElementById('seats').value);
-        const subtotal = base * seats;
-        const final = subtotal * (1 - discount/100);
-        document.getElementById('out').textContent =
-          `Subtotal ${subtotal.toFixed(2)} | Final ${final.toFixed(2)}`;
+      // existing line items
+      const tbody = q('#tbody'); tbody.innerHTML = '';
+      const liRes = await fetch(`/api/deals/${dealId}/line-items?t=${encodeURIComponent(t)}`);
+      const liData = await liRes.json();
+      (liData.results || []).forEach(r => {
+        tbody.appendChild(rowTemplate({
+          id: r.id,
+          name: r.properties?.name || '',
+          unitPrice: r.properties?.price ? Number(r.properties.price) : 0,
+          qty: r.properties?.quantity ? Number(r.properties.quantity) : 1,
+          discountPercent: r.properties?.hs_discount_percentage ? Number(r.properties.hs_discount_percentage) : 0,
+          term: r.properties?.recurringbillingfrequency || '',
+          currency: r.properties?.hs_line_item_currency_code || dealCurrency
+        }, dealCurrency));
+      });
+
+      // catalog & add-row
+      renderCatalog(cfg, features, tbody, dealCurrency);
+      q('#addRow').onclick = () => tbody.appendChild(rowTemplate({}, dealCurrency));
+
+      // save
+      q('#save').onclick = async () => {
+        const rows = [...tbody.querySelectorAll('tr')];
+        const items = rows.map(tr => {
+          const [name, price, qty, disc, term, curr] = [...tr.querySelectorAll('input')];
+          const payload = {
+            name: name.value.trim(),
+            unitPrice: Number(price.value || 0),
+            quantity: Number(qty.value || 0),
+            discountPercent: Number(disc.value || 0),
+            term: (term.value || '').trim(),
+            currency: (curr.value || dealCurrency).trim()
+          };
+          if (tr.dataset.id) payload.id = tr.dataset.id;
+          return payload;
+        }).filter(it => it.name);
+
+        q('#saveStatus').innerText = 'Saving…';
+        const resp = await fetch('/api/line-items/upsert', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ dealId, t, items })
+        });
+        const body = await resp.json();
+        if (resp.ok && body?.ok) {
+          q('#saveStatus').innerText = `Saved (${(body.created?.length||0)} created, ${(body.updated?.length||0)} updated). Refresh your deal to see changes.`;
+        } else {
+          q('#saveStatus').innerText = `Error: ${body?.error || resp.status}`;
+          console.log('Upsert error:', body);
+        }
       };
+
+      q('#status').style.display = 'none';
+      q('#ui').style.display = 'block';
     })();
   </script>
+  <small style="opacity:.6">toolbxrevops v3</small>
 </body>
