@@ -1,38 +1,47 @@
 {
-  "version": 1,
+  "version": 4,
+
   "features": [
-    { "id": "erpPos",     "label": "ERP/POS",              "fromDealProperty": "custom_erp_pos",           "default": "" },
-    { "id": "locations",  "label": "Number of Locations",  "fromDealProperty": "custom_number_locations",  "default": 1, "type": "number" },
-    { "id": "currency",   "label": "Currency",             "fromDealProperty": "hs_currency",              "default": "USD" }
+    { "id": "product",     "label": "Product",             "fromDealProperty": "custom_product",          "default": "E-Commerce" },
+    { "id": "buyingGroup", "label": "Buying Group",        "fromDealProperty": "custom_buying_group",     "default": "" },
+    { "id": "locations",   "label": "Number of Locations", "fromDealProperty": "custom_number_locations", "default": 1, "type": "number" },
+    { "id": "currency",    "label": "Currency",            "fromDealProperty": "hs_currency",             "default": "USD" }
   ],
-  "lineItems": {
-    "standard": [
-      {
-        "id": "subscription",
-        "name": "Subscription",
-        "description": "Per-location subscription",
-        "unitPrice": 100,
-        "qtyFormula": "locations",
-        "include": true
-      }
+
+  "pricing": {
+    "defaultTerm": "monthly",
+    "currencyMultipliers": { "USD": 1, "CAD": 1, "EUR": 1 },
+
+    /* If Buying Group contains this text, add this extra discount (on recurring items) */
+    "vendorExtraDiscounts": [
+      { "contains": "LMC", "discountPercent": 10 }
     ],
+
+    /* Matrix from your Excel: for each Buying Group + Product, define:
+       - implementation: one-time fee (your "Rate" column)
+       - monthlyBase: base monthly (includes 1 store)
+       - perAdditionalStore: per-store monthly for stores beyond the first
+    */
+    "matrix": [
+      { "buyingGroup": "LMC",           "product": "E-Commerce",      "implementation": 210,   "monthlyBase": 2099, "perAdditionalStore": 315 },
+      { "buyingGroup": "LBM Advantage", "product": "E-Commerce",      "implementation": 185,   "monthlyBase": 1799, "perAdditionalStore": 300 },
+      { "buyingGroup": "Sexton",        "product": "E-Commerce",      "implementation": 185,   "monthlyBase": 1949, "perAdditionalStore": 350 },
+      { "buyingGroup": "SBP Lead",      "product": "E-Commerce",      "implementation": 185,   "monthlyBase": 1799, "perAdditionalStore": 300 },
+      { "buyingGroup": "No",            "product": "E-Commerce",      "implementation": 210,   "monthlyBase": 2099, "perAdditionalStore": 350 },
+      { "buyingGroup": "NEMEON",        "product": "E-Commerce",      "implementation": 210,   "monthlyBase": 2099, "perAdditionalStore": 315 },
+
+      { "buyingGroup": "LMC",           "product": "Customer Portal", "implementation": 8899,  "monthlyBase": 1499, "perAdditionalStore": 115 },
+      { "buyingGroup": "LBM Advantage", "product": "Customer Portal", "implementation": 7999,  "monthlyBase": 1399, "perAdditionalStore": 100 },
+      { "buyingGroup": "Sexton",        "product": "Customer Portal", "implementation": 7999,  "monthlyBase": 1199, "perAdditionalStore": 100 },
+      { "buyingGroup": "SBP Lead",      "product": "Customer Portal", "implementation": 7999,  "monthlyBase": 1399, "perAdditionalStore": 100 },
+      { "buyingGroup": "No",            "product": "Customer Portal", "implementation": 10000, "monthlyBase": 1599, "perAdditionalStore": 150 },
+      { "buyingGroup": "NEMEON",        "product": "Customer Portal", "implementation": 8899,  "monthlyBase": 1499, "perAdditionalStore": 115 }
+    ]
+  },
+
+  "lineItems": {
     "options": [
-      {
-        "id": "implementation",
-        "name": "Implementation",
-        "description": "One-time onboarding",
-        "unitPrice": 2500,
-        "qtyFormula": "1",
-        "include": false
-      },
-      {
-        "id": "training",
-        "name": "Training",
-        "description": "Admin training session",
-        "unitPrice": 1200,
-        "qtyFormula": "1",
-        "include": false
-      }
+      { "id": "training", "name": "Training", "description": "Admin training session", "unitPrice": 1200, "qtyFormula": "1", "include": false }
     ]
   }
 }
