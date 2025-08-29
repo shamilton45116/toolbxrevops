@@ -1,0 +1,47 @@
+<!doctype html><meta charset="utf-8">
+<title>Pricing Calculator</title>
+<body style="font-family:system-ui;margin:20px">
+  <h2>Pricing Calculator</h2>
+  <div id="status">Loading deal…</div>
+  <div id="form" style="display:none">
+    <div>Region: <span id="region"></span></div>
+    <div>Segment: <span id="segment"></span></div>
+    <div>Deal Discount: <span id="disc"></span>%</div>
+    <hr>
+    <label>Base Price <input id="base" type="number" value="5000"></label><br><br>
+    <label>Seats <input id="seats" type="number" value="5"></label><br><br>
+    <button id="calc">Calculate</button>
+    <div id="out" style="margin-top:10px;font-weight:600"></div>
+  </div>
+  <script>
+    (async () => {
+      const qs = new URLSearchParams(location.search);
+      const dealId = qs.get('dealId');
+      const t = qs.get('t');
+
+      const r = await fetch(`/api/deals/${dealId}?t=${encodeURIComponent(t)}`);
+      const data = await r.json();
+      if (!data?.properties) {
+        document.getElementById('status').textContent = 'Unable to load deal.';
+        return;
+      }
+      const p = data.properties;
+      document.getElementById('region').textContent  = p.custom_region || 'US';
+      document.getElementById('segment').textContent = p.custom_segment || 'Pro';
+      const discount = Number(p.custom_discount_rate || 0);
+      document.getElementById('disc').textContent = discount;
+
+      document.getElementById('status').style.display = 'none';
+      document.getElementById('form').style.display = 'block';
+
+      document.getElementById('calc').onclick = () => {
+        const base  = Number(document.getElementById('base').value);
+        const seats = Number(document.getElementById('seats').value);
+        const subtotal = base * seats;
+        const final = subtotal * (1 - discount/100);
+        document.getElementById('out').textContent =
+          `Subtotal ${subtotal.toFixed(2)} | Final ${final.toFixed(2)}`;
+      };
+    })();
+  </script>
+</body>
