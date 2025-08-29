@@ -66,11 +66,9 @@ app.use(
     etag: false,
     lastModified: false,
     setHeaders: (res, filePath) => {
-      // Never cache HTML
       if (filePath.endsWith('.html')) {
         res.setHeader('Cache-Control', 'no-store');
       } else {
-        // cache bust for other assets if you like
         res.setHeader('Cache-Control', 'no-cache');
       }
     }
@@ -83,7 +81,7 @@ app.get('/hubspot/calc', (req, res) => {
   res.sendFile(path.join(staticDir, 'calc.html'));
 });
 
-// Add a versioned path so you can bypass any old URL completely
+// Versioned path to bypass any stale caches
 app.get('/hubspot/calc-v3', (req, res) => {
   res.set('Cache-Control', 'no-store');
   res.sendFile(path.join(staticDir, 'calc.html'));
@@ -95,6 +93,17 @@ app.get('/', (_req, res) => {
   <p>Try <code>/hubspot/calc-v3?dealId=YOUR_DEAL_ID&t=YOUR_JWT</code></p>`);
 });
 
+// ----------------------- JWT (MISSING BEFORE) -----------------------
+app.get('/api/jwt', (req, res) => {
+  const { dealId } = req.query;
+  if (!dealId) return res.status(400).send('dealId required');
+  try {
+    const t = jwt.sign({ dealId: String(dealId) }, JWT_SECRET, { expiresIn: '5m' });
+    res.type('text/plain').send(t);
+  } catch {
+    res.status(500).send('Failed to mint JWT');
+  }
+});
 
 // ----------------------- Deals (read + optional write) -----------------------
 function configDealProps() {
@@ -136,7 +145,6 @@ app.patch('/api/deals/:id', async (req, res) => {
 });
 
 // ----------------------- Line Items (read) -----------------------
-// Fetch all line items associated to a deal, then batch-read their properties.
 const LINE_ITEM_PROPS = [
   'name',                          // Name
   'price',                         // Unit Price
