@@ -51,17 +51,15 @@
 
     function rowTemplate(item, currencyDefault) {
       const tr = ce('tr');
-      tr.dataset.id = item.id || ''; // blank means "create"
+      tr.dataset.id = item.id || '';
 
       const name = ce('input', { value: item.name || '', style: 'width:220px' });
       const price = ce('input', { type: 'number', step: '0.01', value: item.unitPrice ?? item.price ?? 0, style: 'width:110px; text-align:right' });
       const qty = ce('input', { type: 'number', step: '1', value: item.quantity ?? item.qty ?? 1, style: 'width:70px; text-align:right' });
       const disc = ce('input', { type: 'number', step: '0.01', value: item.discountPercent ?? item.hs_discount_percentage ?? 0, style: 'width:110px; text-align:right' });
       const term = ce('input', { value: item.term ?? item.recurringbillingfrequency ?? '', style: 'width:120px' });
-
       const curr = ce('input', { value: item.currency || item.hs_line_item_currency_code || currencyDefault || 'USD', style: 'width:80px' });
       const del = ce('button', { innerText: 'Remove' });
-
       del.onclick = () => tr.remove();
 
       [name, price, qty, disc, term, curr, del].forEach((el) => {
@@ -109,12 +107,10 @@
     }
 
     (async () => {
-      // Read context
       const qs = new URLSearchParams(location.search);
       const dealId = qs.get('dealId');
       const t = qs.get('t');
 
-      // Load deal + config + line items
       const [dealRes, cfgRes] = await Promise.all([
         fetch(`/api/deals/${dealId}?t=${encodeURIComponent(t)}`),
         fetch('/api/calc-config')
@@ -126,7 +122,7 @@
         return;
       }
 
-      // Build features from config
+      // Build features
       const features = {};
       for (const f of (cfg.features || [])) {
         let val = deal.properties?.[f.fromDealProperty];
@@ -135,23 +131,19 @@
       }
       const dealCurrency = deal.properties?.hs_currency || features.currency || 'USD';
 
-      // Header
+      // Header & features
       q('#dealHeader').innerHTML = `
         <div><b>Deal Name:</b> ${deal.properties?.dealname || ''}</div>
         <div><b>Deal Stage:</b> ${deal.properties?.dealstage || ''}</div>
       `;
-      // Features
       q('#features').innerHTML = `
         <div><b>ERP/POS:</b> ${features.erpPos ?? ''}</div>
         <div><b>Number of Locations:</b> ${features.locations ?? ''}</div>
         <div><b>Currency:</b> ${dealCurrency}</div>
       `;
 
-      // Table body
-      const tbody = q('#tbody');
-      tbody.innerHTML = '';
-
       // Existing line items
+      const tbody = q('#tbody'); tbody.innerHTML = '';
       const liRes = await fetch(`/api/deals/${dealId}/line-items?t=${encodeURIComponent(t)}`);
       const liData = await liRes.json();
       const existing = (liData.results || []).map(r => ({
@@ -165,7 +157,7 @@
       }));
       existing.forEach(it => tbody.appendChild(rowTemplate(it, dealCurrency)));
 
-      // Catalog buttons (standard + options) from config
+      // Catalog
       renderCatalog(cfg, features, tbody, dealCurrency);
 
       // Add blank row
@@ -178,13 +170,13 @@
           const [name, price, qty, disc, term, curr] = [...tr.querySelectorAll('input')];
           const payload = {
             name: name.value.trim(),
-            unitPrice: money(price.value),
+            unitPrice: Number(price.value || 0),
             quantity: Number(qty.value || 0),
             discountPercent: Number(disc.value || 0),
             term: (term.value || '').trim(),
             currency: (curr.value || dealCurrency).trim()
           };
-          if (tr.dataset.id) payload.id = tr.dataset.id; // update vs create
+          if (tr.dataset.id) payload.id = tr.dataset.id;
           return payload;
         }).filter(it => it.name);
 
